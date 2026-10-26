@@ -1,0 +1,57 @@
+# Turns a pushed episode folder into the release the Instagram workflow reads.
+#
+# Push `<episode>/reel.mp4` and `<episode>/cover.png` (episode = folder name, e.g.
+# tap-to-pay) and this creates or updates the `<episode>` release with those two files.
+# Lets sessions that can push but can't create releases (Claude cloud sessions) publish media.
+name: Episode release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "*/reel.mp4"
+      - "*/cover.png"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: episode-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create or update releases
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if git cat-file -e "$BEFORE" 2>/dev/null; then
+            changed=$(git diff --name-only "$BEFORE" HEAD)
+          else
+            changed=$(git ls-files)
+          fi
+          episodes=$(echo "$changed" | grep -E '^[a-z0-9-]+/(reel\.mp4|cover\.png)$' | cut -d/ -f1 | sort -u)
+          [ -n "$episodes" ] || { echo "No episode media changed."; exit 0; }
+          for ep in $episodes; do
+            for f in reel.mp4 cover.png; do
+              [ -s "$ep/$f" ] || { echo "::error::$ep/$f is missing"; exit 1; }
+            done
+            if gh release view "$ep" >/dev/null 2>&1; then
+              gh release upload "$ep" "$ep/reel.mp4" "$ep/cover.png" --clobber
+              echo "Updated release $ep"
+            else
+              notes="Whyverse reel."
+              [ -s "$ep/NOTES.md" ] && notes=$(cat "$ep/NOTES.md")
+              gh release create "$ep" "$ep/reel.mp4" "$ep/cover.png" --title "$ep" --notes "$notes"
+              echo "Created release $ep"
+            fi
+            echo "### Release \`$ep\` ready" >> "$GITHUB_STEP_SUMMARY"
+          done
